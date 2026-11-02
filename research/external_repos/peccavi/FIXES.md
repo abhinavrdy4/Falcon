@@ -73,3 +73,12 @@ group is dropped, the default box `[256,256,512,512]` is used, and the top-4 of 
 `strengths[0]`; the per-NMP `Ws` is not used. Pinned by
 `test_split_drops_box_seen_in_all_paraphrases`. The wrapper records per image `nmp_boxes`, `nmp_boxes_in_all`
 and `nmp_fallback` (`quadrant` / `centre` / `none`) so the smoke run shows how often this happens.
+
+## Ablation track (not part of the official run)
+
+`peccavi_raw` (`wmedit/peccavi.py: PECCAVIRaw`, `configs/peccavi_smoke_raw.yaml`) uses the image `Watermarker.forward()`
+writes *before* adaptive enhancement (`Image_<id>_wm_100.png`) as L0, instead of the enhanced image. Nothing in this
+folder changes: it reuses the official run's patches, keys, embedding and detector. Reason: with the released
+`ssim_threshold: 0.99`, enhancement keeps 30-60% of the watermark residual (theta 0.4-0.7) and L0 detection falls
+from 9/10 to 4/10 on the smoke images; the un-enhanced image (PSNR ~29.0 dB, SSIM ~0.96) is close to the quality the
+paper reports for PECCAVI (Table 1: 29.6-29.9 dB, 0.93). The official track stays the benchmark row.

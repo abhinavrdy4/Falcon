@@ -1,0 +1,18 @@
+# PECCAVI smoke test + ablation track `peccavi_raw`: the official run (peccavi_smoke.yaml, 10 images) plus the
+# same 4 edits on the PECCAVI image *before* adaptive enhancement. Not the official method: the released config
+# blends 40-70% of the original back in (ssim_threshold 0.99), which leaves L0 at PSNR ~38.6 dB; the paper reports
+# PECCAVI at ~29.7 dB / SSIM 0.93, close to the un-enhanced image (~29.0 dB / 0.96).
+# Same experiment name and folders as peccavi_smoke, so the cached paraphrases, XRAI, embeddings, edits and rows
+# are reused; only the peccavi_raw track is new (no re-embedding). The clean track keeps its existing rows: its
+# detector (same patches, keys and test) is the same for both PECCAVI tracks.
+base: peccavi_smoke.yaml
+dataset:
+  name: pie_bench_pp
+  subsets: null
+  per_subset: 10
+  max_images: 10
+  rounds: 4
+watermarks:
+  - {name: none}
+  - {name: peccavi}
+  - {name: peccavi_raw}  # ablation: L0 = Image_<id>_wm_100.png (no adaptive enhancement)

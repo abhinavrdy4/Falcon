@@ -93,7 +93,7 @@ class Experiment:
             kw = {k: v for k, v in self.wm_cfgs.get(name, {"name": name}).items() if k != "name"}
             wm = GEN_REGISTRY[name](**kw) if name in GEN_REGISTRY else build_watermark(name, **kw)
             if getattr(wm, "per_image_state", False):  # PECCAVI: patches + keys are stored per image
-                wm.cache_dir = self.root / "wm_state" / name
+                wm.cache_dir = self.root / "wm_state" / getattr(wm, "state_name", name)
             self._wm_cache[name] = wm
         return self._wm_cache[name]
 

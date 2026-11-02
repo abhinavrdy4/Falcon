@@ -68,6 +68,7 @@ class PECCAVI(Watermark):
     name = "peccavi"
     nbits = 0  # zero-bit
     per_image_state = True  # pipeline passes the Sample to embed/score and sets cache_dir
+    state_name = "peccavi"  # cache folder under <experiment>/wm_state/ (shared by PECCAVIRaw)
 
     def __init__(self, device=None, num_paraphrases: int = 5, paraphrase_fp16: bool = True, **_):
         import matplotlib
@@ -97,7 +98,8 @@ class PECCAVI(Watermark):
         n = self.file_id(sid)
         return {"root": root, "input": root / f"Image_{n}.png", "para_dir": root / "paraphrases" / n,
                 "final": root / "paraphrases" / n / "final.json", "wm_dir": root / "wm",
-                "wm_img": root / "wm" / n / f"Enhanced_{n}_100_wm.png", "state": root / "wm" / n / "state.json",
+                "wm_img": root / "wm" / n / f"Enhanced_{n}_100_wm.png", "raw_img": root / "wm" / n / f"Image_{n}_wm_100.png",
+                "state": root / "wm" / n / "state.json",
                 "timings": root / "timings.json"}
 
     def _record(self, sid: str, **seconds):
@@ -272,3 +274,16 @@ class PECCAVI(Watermark):
             out[f"p_patch{r['patch_idx']}"] = r["p_value"]
             out[f"wdp_patch{r['patch_idx']}"] = r["wdp"]
         return out
+
+
+class PECCAVIRaw(PECCAVI):
+    """Ablation, not the official method: L0 is the optimised image *before* adaptive enhancement
+    (Image_<id>_wm_100.png, written by the same Watermarker.forward() call as the enhanced image). Same patches,
+    keys, detector and cache as `peccavi`, so it costs no extra paraphrasing, XRAI or embedding. Its image quality
+    (PSNR ~29 dB, SSIM ~0.96 on the smoke images) is close to what the paper reports for PECCAVI (29.6-29.9 dB,
+    0.93), while the enhanced image is at ~38.6 dB / 0.99."""
+    name = "peccavi_raw"
+
+    def embed(self, img: Image.Image, bits, sample=None) -> Image.Image:
+        super().embed(img, bits, sample)  # makes sure the official outputs exist (cached after the first call)
+        return Image.open(self.paths(sample.id)["raw_img"]).convert("RGB")

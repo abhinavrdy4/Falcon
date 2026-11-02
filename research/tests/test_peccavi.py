@@ -290,6 +290,42 @@ def test_pipeline_runs_peccavi_with_control_track(pec, tmp_path, monkeypatch):
     assert {"peccavi_p_value", "peccavi_wdp", "peccavi_p_patch0"} <= set(df.columns)
 
 
+def test_pipeline_raw_track_reuses_official_embedding(pec, W, tmp_path, monkeypatch):
+    """Ablation track peccavi_raw: L0 = the pre-enhancement image, from the same (single) embedding per image."""
+    from wmedit import pipeline as PL
+
+    samples = [sample("000000000001"), sample("000000000002")]
+    for s in samples:
+        s.plan = [EditStep(r, "x", f"edit {r}", "a", "b") for r in (1, 2)]
+    images = {s.id: textured_image(i) for i, s in enumerate(samples)}
+    monkeypatch.setattr(PL, "load_pie_bench", lambda *a, **k: (
+        list(samples), dict(images), {k: np.zeros((512, 512), np.uint8) for k in images}))
+    monkeypatch.setattr("wmedit.editors.build_editor", lambda name, **kw: IdentityEditor())
+    monkeypatch.setattr(P, "get_device", lambda: torch.device("cpu"))
+    forward, calls = W.Watermarker.forward, []
+    monkeypatch.setattr(W.Watermarker, "forward", lambda self, *a: calls.append(a) or forward(self, *a))
+    cfg = PL.load_config(Path(__file__).resolve().parents[1] / "configs" / "peccavi_smoke_raw.yaml",
+                         [f"output_dir={tmp_path}", "dataset.rounds=2"])
+    assert cfg["name"] == "peccavi_smoke"  # same experiment folders as the official run, so its cache is reused
+    exp = PL.Experiment(cfg)
+    exp.prepare()
+    exp.embed()
+    exp.edit()
+    exp.evaluate(image_metrics=False)
+    assert len(calls) == len(samples)  # one embedding per image, shared by both tracks
+    raw = exp.watermark("peccavi_raw")
+    assert raw.cache_dir == exp.watermark("peccavi").cache_dir == exp.root / "wm_state" / "peccavi"
+    s = samples[0]
+    l0_raw = np.asarray(Image.open(exp.l0_path("peccavi_raw", s.id)))
+    assert np.array_equal(l0_raw, np.asarray(Image.open(raw.paths(s.id)["raw_img"]).convert("RGB")))
+    assert not np.array_equal(l0_raw, np.asarray(Image.open(exp.l0_path("peccavi", s.id))))
+    df = __import__("pandas").read_csv(exp.res_dir / "rows.csv")
+    assert len(df) == 3 * 2 * 3  # tracks x images x levels
+    r = df[df.watermark == "peccavi_raw"]
+    assert r[r.level == 0].detected.all() and r[r.level == 0].wm_psnr.max() < df[
+        (df.watermark == "peccavi") & (df.level == 0)].wm_psnr.min()  # un-enhanced = more distorted
+
+
 def test_wmdiffusion_on_current_diffusers():
     """FIX 7: the official SD pipeline subclass loads and trains on the diffusers version Falcon uses."""
     with P.peccavi_env("cpu"):

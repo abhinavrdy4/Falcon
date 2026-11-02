@@ -205,7 +205,13 @@ def _peccavi(**kwargs):  # imported lazily: wmedit.peccavi imports this module
     return PECCAVI(**kwargs)
 
 
-REGISTRY = {"wam": WAM, "trustmark": TrustMarkWM, "dwtdct": DWTDCT, "peccavi": _peccavi}
+def _peccavi_raw(**kwargs):  # ablation: PECCAVI without adaptive enhancement (see wmedit.peccavi.PECCAVIRaw)
+    from .peccavi import PECCAVIRaw
+
+    return PECCAVIRaw(**kwargs)
+
+
+REGISTRY = {"wam": WAM, "trustmark": TrustMarkWM, "dwtdct": DWTDCT, "peccavi": _peccavi, "peccavi_raw": _peccavi_raw}
 
 
 def build_watermark(name: str, **kwargs) -> Watermark:

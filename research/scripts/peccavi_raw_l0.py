@@ -43,8 +43,7 @@ def main():
     done = {str(r["id"]) for r in rows}
     for s in exp.samples:
         p = wm.paths(s.id)
-        n = wm.file_id(s.id)
-        raw_p = p["wm_img"].parent / f"Image_{n}_wm_100.png"
+        raw_p = p["raw_img"]
         if s.id in done or not (raw_p.exists() and p["state"].exists()):
             continue
         raw = Image.open(raw_p).convert("RGB")

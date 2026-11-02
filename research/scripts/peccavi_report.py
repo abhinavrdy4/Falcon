@@ -47,8 +47,14 @@ def load_rows(exps: list[Path]) -> pd.DataFrame:
         ["watermark", "id", "level"]).reset_index(drop=True)
 
 
-def detection_table(df: pd.DataFrame) -> pd.DataFrame:
-    wm, clean = df[df.watermark == "peccavi"], df[df.watermark == "none"]
+TRACKS = {"peccavi": ("PECCAVI (official)", "-", PECCAVI_COLOR),  # track -> label, line style, marker face
+          "peccavi_raw": ("PECCAVI, no enhancement\n(ablation)", "--", "white")}
+
+
+def detection_table(df: pd.DataFrame, track: str = "peccavi") -> pd.DataFrame:
+    """Detection per round for `track`; false positives from the clean track. Both PECCAVI tracks use the same
+    detector, patches and keys, so the clean track's peccavi_* columns are their shared control."""
+    wm, clean = df[df.watermark == track], df[df.watermark == "none"]
     out = []
     for L in sorted(df.level.unique()):
         g, c = wm[wm.level == L], clean[clean.level == L]
@@ -64,14 +70,30 @@ def detection_table(df: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out)
 
 
-def figure(det: pd.DataFrame, out: Path):
-    fig, ax = plt.subplots(figsize=(4.2, 2.8))
-    x = det.level.to_numpy()
-    ax.fill_between(x, det.det_ci_lo, det.det_ci_hi, color=PECCAVI_COLOR, alpha=0.12, linewidth=0)
-    ax.plot(x, det.det_rate, color=PECCAVI_COLOR, marker="o")
-    n = int(det.n.min())
-    ax.annotate(f"PECCAVI (n={n})", (x[-1], det.det_rate.iloc[-1]), xytext=(x[-1] + 0.15, det.det_rate.iloc[-1]),
-                va="center", fontsize=8, color=INK)
+def figure(dets: dict, out: Path):
+    """dets: track -> detection_table(). One track: the original layout (label at L4). Two tracks: labels at L0
+    (left of the axis, where the lines are furthest apart) and a legend below."""
+    two = len(dets) > 1
+    fig, ax = plt.subplots(figsize=(5.0, 3.0) if two else (4.2, 2.8))
+    placed_l = []
+    for track, det in sorted(dets.items(), key=lambda kv: -kv[1].det_rate.iloc[0]):
+        label, ls, mfc = TRACKS[track]
+        x = det.level.to_numpy()
+        n = int(det.n.min())
+        ax.fill_between(x, det.det_ci_lo, det.det_ci_hi, color=PECCAVI_COLOR, alpha=0.12 if ls == "-" else 0.06,
+                        linewidth=0)
+        ax.plot(x, det.det_rate, color=PECCAVI_COLOR, ls=ls, marker="o", mfc=mfc, mec=PECCAVI_COLOR, mew=1.5,
+                label=f"{label.replace(chr(10), ' ')} (n={n})")
+        if two:
+            y = det.det_rate.iloc[0]
+            yy = min(y, placed_l[-1] - 0.16) if placed_l else y
+            placed_l.append(yy)
+            ax.annotate(label, (x[0], y), xytext=(-0.2, yy), ha="right", va="center", fontsize=7.5, color=INK)
+        else:
+            ax.annotate(f"PECCAVI (n={n})", (x[-1], det.det_rate.iloc[-1]),
+                        xytext=(x[-1] + 0.15, det.det_rate.iloc[-1]), va="center", fontsize=8, color=INK)
+    x = next(iter(dets.values())).level.to_numpy()
+    n = int(min(d.n.min() for d in dets.values()))
     # site reference: L4 only, neutral markers, direct labels (identity is in the text, not the colour)
     refs = sorted(SITE_REF, key=lambda r: r[2])
     placed = []
@@ -85,11 +107,13 @@ def figure(det: pd.DataFrame, out: Path):
                     color=INK2, arrowprops=dict(arrowstyle="-", color=INK2, lw=0.5, relpos=(0, 0.5), shrinkA=1,
                                                 shrinkB=4))
     ax.set_xticks(range(int(x.max()) + 1))
-    ax.set_xlim(-0.2, 6.6)
+    ax.set_xlim(-2.6 if two else -0.2, 6.6)
     ax.set_ylim(-0.02, 1.02)
     ax.set_xlabel("editing round (L0 = watermarked original)")
     ax.set_ylabel("detection rate @ FPR 1e-3")
     ax.set_title("InstructPix2Pix", fontsize=9, color=INK)
+    if two:
+        ax.legend(loc="upper center", bbox_to_anchor=(0.5, -0.22), ncol=2, fontsize=7, frameon=False)
     fig.suptitle(f"PECCAVI retention under sequential editing (baseline, n={n} images; 95% Wilson CI)\n"
                  "smoke test: intervals are wide; diamonds = Falcon-site L4 values, not re-run",
                  fontsize=8, color=INK, y=1.08)
@@ -112,7 +136,12 @@ def main():
     df.to_csv(a.out / "rows.csv", index=False)
     det = detection_table(df)
     det.to_csv(a.out / "peccavi_detection_by_level.csv", index=False)
-    figure(det, a.out)
+    dets = {"peccavi": det}
+    rawt = df[df.watermark == "peccavi_raw"]
+    if len(rawt):
+        dets["peccavi_raw"] = det_raw = detection_table(df, "peccavi_raw")
+        det_raw.to_csv(a.out / "peccavi_raw_detection_by_level.csv", index=False)
+    figure(dets, a.out)
 
     wm, clean = df[df.watermark == "peccavi"], df[df.watermark == "none"]
     n = wm.id.nunique()
@@ -138,6 +167,10 @@ def main():
          "|---|---|---|---|---|---|",
          f"| **PECCAVI** (this run) | **{pct(int(L4.detected), int(L4.n))}** | not run | not run | {int(L4.n)} | "
          "this smoke test, PIE-Bench++ |"]
+    if len(rawt):
+        R4 = det_raw[det_raw.level == det_raw.level.max()].iloc[0]
+        s.append(f"| PECCAVI, no adaptive enhancement (ablation, not the official method) | "
+                 f"{pct(int(R4.detected), int(R4.n))} | not run | not run | {int(R4.n)} | this smoke test, PIE-Bench++ |")
     for name, kind, v, lo, hi, nn, data in SITE_REF:
         s.append(f"| {name} ({kind}) | {v}% ({lo}-{hi}) | see site | see site | {nn} | Falcon site, {data}, not re-run |")
     s += ["", "![PECCAVI detection vs round](peccavi_fig1_retention_det_rate.png)", "",
@@ -148,9 +181,27 @@ def main():
     s += [md_table(t[["level", "n", "detection", "mean_wdp", "median_p_bonf", "clean FP", "clean_mean_wdp",
                       "clean_median_p_bonf"]]), "",
           "The clean track runs the same PECCAVI detector, with each image's own stored patches and keys, on the "
-          "unwatermarked image and its edits (same prompts and seeds).", "",
-          "## Per image, per round: Bonferroni p, WDP and per-patch p-values", ""]
+          "unwatermarked image and its edits (same prompts and seeds).", ""]
     pcols = sorted([c for c in wm.columns if c.startswith("p_patch")])
+    if len(rawt):
+        r0 = rawt[rawt.level == 0]
+        tr = det_raw.copy()
+        tr["detection"] = [pct(int(k), int(m)) for k, m in zip(tr.detected, tr.n)]
+        tr["clean FP"] = [f"{int(k)}/{int(m)} " + pct(int(k), int(m)) for k, m in zip(tr.clean_fp, tr.clean_n)]
+        s += ["## Ablation: PECCAVI without adaptive enhancement (`peccavi_raw`)", "",
+              "Not the official method. L0 is the image `Watermarker.forward()` writes *before* adaptive enhancement "
+              "(`Image_<id>_wm_100.png`); the official L0 is the enhanced image (theta x original + (1 - theta) x "
+              "raw, theta 0.4-0.7 with the released `ssim_threshold: 0.99`). Same images, patches, keys, detector, "
+              "edit prompts and seeds as the official track; only the starting image differs. The paper reports "
+              "PECCAVI (XRAI) at PSNR 29.6-29.9 dB / SSIM 0.93 (its Table 1), which is close to this un-enhanced "
+              "image, not to the enhanced one. The clean track (false positives) is shared: same detector and keys.", "",
+              f"Image quality at L0 vs original: PSNR {r0.wm_psnr.mean():.2f} dB (min {r0.wm_psnr.min():.2f}), "
+              f"SSIM {r0.wm_ssim.mean():.4f} (min {r0.wm_ssim.min():.4f}); n={len(r0)}. Official (enhanced): "
+              f"PSNR {wm[wm.level == 0].wm_psnr.mean():.2f} dB, SSIM {wm[wm.level == 0].wm_ssim.mean():.4f}.", "",
+              md_table(tr[["level", "n", "detection", "mean_wdp", "median_p_bonf", "clean FP"]]), "",
+              "Per image, per round:", "",
+              md_table(rawt[["id", "category", "level", "detected", "p_value", "wdp"] + pcols], ".2e"), ""]
+    s += ["## Per image, per round: Bonferroni p, WDP and per-patch p-values", ""]
     s += [md_table(wm[["id", "category", "level", "detected", "p_value", "wdp"] + pcols], ".2e"), "",
           "Clean track:", "", md_table(clean[["id", "level", "peccavi_detected", "peccavi_p_value", "peccavi_wdp"] +
                                              [f"peccavi_{c}" for c in pcols if f"peccavi_{c}" in clean]], ".2e"), ""]

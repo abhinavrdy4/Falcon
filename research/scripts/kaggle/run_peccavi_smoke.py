@@ -35,8 +35,12 @@ def resume_from_inputs(out: Path, inputs: Path = Path("/kaggle/input")):
     """Copy a previous version's outputs (attached as notebook input) so finished work is skipped."""
     if not inputs.exists():
         return
-    for prev in inputs.glob(f"**/{out.name}"):
+    done: list[Path] = []
+    for prev in sorted(inputs.glob(f"**/{out.name}"), key=lambda p: len(p.parts)):
+        if any(d in prev.parents for d in done):  # gpu<i>/peccavi_smoke inside an output already copied
+            continue
         if prev.is_dir() and prev.resolve() != out.resolve():
+            done.append(prev)
             log(f"resuming from {prev}")
             shutil.copytree(prev, out, dirs_exist_ok=True, copy_function=_copy_if_missing)
 
