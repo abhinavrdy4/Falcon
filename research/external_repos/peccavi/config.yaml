@@ -1,0 +1,83 @@
+#---------------------- Weights and Biases ----------------------#
+wandb: True
+wandb_run_name: "Name you run"
+project_name: "Project Name"
+
+#---------------------- Models ----------------------#
+# model_id: 'stabilityai/stable-diffusion-2-base'
+# paraphrasing_model: "stabilityai/stable-diffusion-2-base"
+model_id: 'stabilityai/stable-diffusion-xl-base-1.0'
+paraphrasing_model: 'stabilityai/stable-diffusion-xl-base-1.0'
+
+
+#---------------------- Paths ----------------------#
+base_images_dir: "data/Images/"
+paraphrased_images_dir: "data/Paraphrased"
+WM_Paraphrased_dir: "data/WM_Paraphrased"
+watermarked_path: "data/Watermarked"
+save_img: 'output/'
+bbox_json_path: "data/Paraphrased/final.json"
+json_data_path: 'captions_train2014_new_format.json'
+
+#------------------------ Device Configuration ------------------------#
+device: "cuda:1"
+
+#------------------------- Image & Shapes --------------------------#
+original_shape: 
+  - 512
+  - 512
+
+target_shape: 
+  - 64
+  - 64
+
+wm_pipe_shape: 
+  - 1
+  - 4
+  - 64
+  - 64
+
+strengths:
+  - 1
+  - 0.75
+  - 0.5
+  - 0.25
+  - 0.1
+
+#------------------------ General Configuration -----------------------#
+method: 'ZoDiac'
+gen_seed: 0
+empty_prompt: true
+
+#--------------------- Watermarking Configuration ---------------------#
+w_type: 'single'
+w_channel: 3
+w_radius: 10
+w_seed: 10
+
+start_latents: 'init_w'  # Options: ['init', 'init_w', 'rand', 'rand_w']
+iters: 100
+num_inference_steps: 50
+learning_rate: 0.25
+milestones:
+  - 50
+  - 80
+
+loss_weights: 
+  - 10.0  # L2 loss
+  - 0.1   # Watson-VGG loss
+  - 0.5   # SSIM loss
+  - 0.0   # Watermark L1 loss
+
+save_img:
+  - 1
+  - 10
+  - 25
+  - 50
+  - 75
+  - 100
+
+#------------------------- Detection Configuration ---------------------#
+detection: True
+ssim_threshold: 0.99
+detect_threshold: 0.9
