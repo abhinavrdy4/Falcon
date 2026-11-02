@@ -10,6 +10,7 @@ hyperparameters and settings.
 # IMPORTS
 # ==============================================================================
 
+import os
 import yaml
 import torch
 import re
@@ -51,6 +52,10 @@ class ConfigLoader:
         # Flatten the dictionary into instance attributes for easy access
         for key, value in self.config.items():
             setattr(self, key, value)
+
+        # PECCAVI-FIX 5: device was hard-coded to cuda:1 in config.yaml; allow an override.
+        if os.environ.get("PECCAVI_DEVICE"):
+            self.device = os.environ["PECCAVI_DEVICE"]
     
     def wandb_config(self):
         """

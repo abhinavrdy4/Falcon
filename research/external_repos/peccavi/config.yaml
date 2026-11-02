@@ -6,7 +6,10 @@ project_name: "Project Name"
 #---------------------- Models ----------------------#
 # model_id: 'stabilityai/stable-diffusion-2-base'
 # paraphrasing_model: "stabilityai/stable-diffusion-2-base"
-model_id: 'stabilityai/stable-diffusion-xl-base-1.0'
+# PECCAVI-FIX 3: the watermark pipeline (WMDetectStableDiffusionPipeline) is an SD-1/2 class and cannot load SDXL.
+# stabilityai/stable-diffusion-2-base is no longer downloadable from the Hub; this is a byte-identical mirror
+# (512-base-ema.ckpt sha256 d635794c1fedfdfa..., same as sd-research/ and Manojb/ mirrors). SDXL stays for paraphrasing.
+model_id: 'sd2-community/stable-diffusion-2-base'
 paraphrasing_model: 'stabilityai/stable-diffusion-xl-base-1.0'
 
 
@@ -20,7 +23,9 @@ bbox_json_path: "data/Paraphrased/final.json"
 json_data_path: 'captions_train2014_new_format.json'
 
 #------------------------ Device Configuration ------------------------#
-device: "cuda:1"
+# PECCAVI-FIX 5: was "cuda:1" (hard-coded second GPU); pick the GPU with CUDA_VISIBLE_DEVICES,
+# override with the PECCAVI_DEVICE environment variable (e.g. cpu for tests).
+device: "cuda"
 
 #------------------------- Image & Shapes --------------------------#
 original_shape: 

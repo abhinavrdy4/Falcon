@@ -26,6 +26,7 @@ class WatermarkStableDiffusionPipeline(StableDiffusionPipeline):
         scheduler,
         safety_checker,
         feature_extractor,
+        image_encoder=None,  # PECCAVI-FIX 7: component added to StableDiffusionPipeline in diffusers 0.27
         requires_safety_checker: bool = True,
     ):
         super(WatermarkStableDiffusionPipeline, self).__init__(vae,
@@ -35,7 +36,8 @@ class WatermarkStableDiffusionPipeline(StableDiffusionPipeline):
                 scheduler,
                 safety_checker,
                 feature_extractor,
-                requires_safety_checker)
+                image_encoder=image_encoder,  # PECCAVI-FIX 7: diffusers>=0.27 inserted image_encoder before
+                requires_safety_checker=requires_safety_checker)  # requires_safety_checker, so pass both by keyword
 
     # Generate image in tensor format
     def decode_latents_tensor(self, latents):
@@ -363,6 +365,7 @@ class WMDetectStableDiffusionPipeline(WatermarkStableDiffusionPipeline):
         scheduler,
         safety_checker,
         feature_extractor,
+        image_encoder=None,  # PECCAVI-FIX 7: component added to StableDiffusionPipeline in diffusers 0.27
         requires_safety_checker: bool = True,
     ):
         super(WMDetectStableDiffusionPipeline, self).__init__(vae,
@@ -372,7 +375,8 @@ class WMDetectStableDiffusionPipeline(WatermarkStableDiffusionPipeline):
                 scheduler,
                 safety_checker,
                 feature_extractor,
-                requires_safety_checker)
+                image_encoder=image_encoder,  # PECCAVI-FIX 7: diffusers>=0.27 inserted image_encoder before
+                requires_safety_checker=requires_safety_checker)  # requires_safety_checker, so pass both by keyword
         self.forward_diffusion = partial(self.backward_diffusion, reverse_process=True)
 
     ######### From Tree-Rings repo, for inverse diffusion model ########

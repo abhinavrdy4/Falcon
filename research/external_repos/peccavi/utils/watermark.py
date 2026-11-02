@@ -2,6 +2,7 @@
 """
 
 import os
+import hashlib
 import yaml
 import torch
 import json
@@ -59,6 +60,8 @@ class Watermarker:
         # Instances are populated lazily in watermarking() once we know the
         # latent shape for each patch.
         self.wm_pipes = {}   # {patch_idx: GTWatermark}
+        self.patch_meta = {}  # PECCAVI-FIX 2: {patch_idx: key seed, box, mask size, ...} saved to state.json
+        self.last_detection = []  # per-patch results of the last detect() call (instrumentation only)
 
         # FIX 1: The original also initialised a single self.wm_pipe here
         # for 'single'/'multiple' w_type.  That block is removed because the
@@ -221,11 +224,10 @@ class Watermarker:
         ssim_value = ssim(enhanced_img_tensor, gt_img_tensor).item()
         psnr_value = compute_psnr(enhanced_img_tensor, gt_img_tensor)
 
-        # Use the first patch's wm_pipe for the enhancement detection probe.
-        # (Any patch's pipe is valid here since we just need the watermark signal.)
-        first_wm_pipe = next(iter(self.wm_pipes.values()))
-        text_embeddings = self.pipe.get_text_embedding(" ")
-        det_prob = 1 - watermark_prob(enhanced_img_tensor, self.pipe, first_wm_pipe, text_embeddings)
+        # PECCAVI-FIX 6 (found once 1-5 were fixed): this probe inverted the full 512 px image (64x64 latent)
+        # and tested it with a patch key whose mask is 8x8 -> IndexError on every image. Its value only
+        # feeds the print/wandb log below and does not affect the enhanced image, so it is skipped.
+        det_prob = float("nan")
 
         number = re.search(r'Image_(\d+)', gt_path).group(1)
         path = os.path.join(self.watermarked_path, f"{number}/Enhanced_{number}_{self.save_img[-1]}_wm.png")
@@ -313,6 +315,61 @@ class Watermarker:
         return result
 
     # --------------------------------------------------------------------------
+    # PECCAVI-FIX 1 + 2: latent box for GTWatermark, seeded keys, persisted state
+    # --------------------------------------------------------------------------
+
+    def patch_latent_box(self):
+        """
+        Box in the format GTWatermark expects: (x_center, y_center, w, h) in the grid it watermarks.
+        Each patch is inverted on its own, so that grid is the patch latent (64 px / 8 = 8x8) and the
+        box is the whole latent; adjust_coordinates() would clamp any other 8x8 box to this one.
+        """
+        s = self.patch_size // self.pipe.vae_scale_factor
+        return [s // 2, s // 2, s, s]
+
+    @staticmethod
+    def key_seed(image_id, patch_idx):
+        """Deterministic 31-bit seed for the ring key of one patch of one image."""
+        h = hashlib.sha256(f"peccavi|{image_id}|{patch_idx}".encode()).hexdigest()
+        return int(h[:8], 16) & 0x7FFFFFFF
+
+    def _make_wm_pipe(self, patch_idx, latent_shape, seed):
+        wm_pipe = GTWatermark(
+            bounding_boxes=[self.patch_latent_box()],
+            strengths=self.strength,
+            w_channel=patch_idx % 4,
+            device=self.device
+        )
+        wm_pipe._gen_gt_(tuple(latent_shape), generator=torch.Generator("cpu").manual_seed(seed))
+        if not bool(wm_pipe.watermarking_mask.any()):
+            raise RuntimeError(f"Empty ring mask for patch {patch_idx} (box {self.patch_latent_box()})")
+        return wm_pipe
+
+    def save_state(self, path, image_id):
+        """Everything detect() needs to rebuild the per-patch keys in another process."""
+        state = {
+            "image_id": image_id,
+            "patch_size": self.patch_size,
+            "strengths": self.strength,
+            "patches": [dict(idx=i, coords=list(self.patches[i]), **self.patch_meta[i])
+                        for i in sorted(self.patch_meta)],
+        }
+        with open(path, "w") as f:
+            json.dump(state, f, indent=2)
+        return path
+
+    def load_state(self, path):
+        """Restore patches and per-patch GTWatermark instances saved by save_state()."""
+        with open(path) as f:
+            state = json.load(f)
+        self.patches = [p["coords"] for p in state["patches"]]
+        self.wm_pipes, self.patch_meta = {}, {}
+        for i, p in enumerate(state["patches"]):
+            self.wm_pipes[i] = self._make_wm_pipe(i, p["latent_shape"], p["seed"])
+            self.patch_meta[i] = {k: v for k, v in p.items() if k not in ("idx", "coords")}
+        return state
+
+    # --------------------------------------------------------------------------
     # WATERMARKING  (FIX 1 + FIX 2 applied here)
     # --------------------------------------------------------------------------
 
@@ -353,13 +410,6 @@ class Watermarker:
             #   paper, where each patch uses a different frequency channel.
             # ------------------------------------------------------------------
             patch_channel = patch_idx % 4
-            wm_pipe = GTWatermark(
-                bounding_boxes=[patch_coords],  # single bbox = the patch itself
-                strengths=self.strength,
-                w_channel=patch_channel,
-                device=self.device
-            )
-            self.wm_pipes[patch_idx] = wm_pipe
 
             # Extract patch and obtain its latent via DDIM inversion
             patch_tensor = self.extract_image_patch(gt_img_tensor, patch_coords)
@@ -370,9 +420,21 @@ class Watermarker:
             #   In the original code _gen_gt_() was NEVER called, so gt_patch
             #   and watermarking_mask were both None, causing inject_watermark()
             #   to crash or silently do nothing.
+            # PECCAVI-FIX 1: the box passed to GTWatermark was [col, row] (it unpacks
+            #   x, y, w, h -> ValueError); it is now the patch-latent box.
+            # PECCAVI-FIX 2: the ring key came from an unseeded randn_tensor and was
+            #   never saved; it is now seeded from (image id, patch index) and the
+            #   seed is written to state.json next to the watermarked image.
             # ------------------------------------------------------------------
             latent_shape = reversed_patch_latents.shape
-            wm_pipe._gen_gt_(latent_shape)
+            seed = self.key_seed(number, patch_idx)
+            wm_pipe = self._make_wm_pipe(patch_idx, latent_shape, seed)
+            self.wm_pipes[patch_idx] = wm_pipe
+            self.patch_meta[patch_idx] = {
+                "channel": patch_channel, "seed": seed, "box": self.patch_latent_box(),
+                "latent_shape": list(latent_shape), "mask_size": int(wm_pipe.watermarking_mask.sum()),
+                "placed": False,
+            }
 
             # Prepare optimisable latent copy
             init_latents = reversed_patch_latents.detach().clone().to(self.device)
@@ -426,6 +488,7 @@ class Watermarker:
                         watermarked_img_tensor = self.place_patch_in_image(
                             watermarked_img_tensor, watermarked_patch_tensor, patch_coords
                         )
+                        self.patch_meta[patch_idx]["placed"] = True
                 
                 except RuntimeError as e:
                     print(f"Error processing patch {patch_idx+1}: {e}")
@@ -443,7 +506,8 @@ class Watermarker:
         )
         os.makedirs(os.path.dirname(path_new), exist_ok=True)
         save_img(path_new, watermarked_img_tensor, self.pipe)
-        
+        self.save_state(os.path.join(os.path.dirname(path_new), "state.json"), number)  # PECCAVI-FIX 2
+
         torch.cuda.empty_cache()
         print("Patch-Based Watermarking Completed!")
         return path_new, avg_loss
@@ -520,6 +584,8 @@ class Watermarker:
 
         if detection_image_cv.shape[:2] != (512, 512):
             detection_image_cv = cv2.resize(detection_image_cv, (512, 512))
+        # PECCAVI-FIX 4: cv2 reads BGR; the embedder (get_img_tensor, PIL) works in RGB.
+        detection_image_cv = cv2.cvtColor(detection_image_cv, cv2.COLOR_BGR2RGB)
 
         # Convert to a float tensor [1, 3, 512, 512] on the correct device
         detection_image_np = detection_image_cv.transpose(2, 0, 1).astype(np.float32) / 255.0
@@ -533,6 +599,7 @@ class Watermarker:
         print("Detecting Watermark (patch-level scan)...")
 
         max_wdp = 0.0
+        self.last_detection = []
 
         for patch_idx, patch_coords in enumerate(self.patches):
             # Skip if this patch didn't get a wm_pipe (e.g. early crash)
@@ -546,7 +613,10 @@ class Watermarker:
             patch_tensor = self.extract_image_patch(detection_img_tensor, patch_coords)
 
             # FIX 3: evaluate the watermark signal on this patch's own latent
-            det_prob = 1.0 - watermark_prob(patch_tensor, self.pipe, wm_pipe, text_embeddings)
+            p_value = watermark_prob(patch_tensor, self.pipe, wm_pipe, text_embeddings)
+            det_prob = 1.0 - p_value
+            self.last_detection.append({"patch_idx": patch_idx, "coords": list(patch_coords),
+                                        "channel": patch_idx % 4, "p_value": float(p_value), "wdp": float(det_prob)})
             print(f"  Patch {patch_idx} {patch_coords} ch={patch_idx % 4}: WDP = {det_prob:.4f}")
 
             if det_prob > max_wdp:

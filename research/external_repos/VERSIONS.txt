@@ -1,2 +1,3 @@
 Falcon https://github.com/SRDdev/Falcon.git 44c2d26d937dd73b6b12b977d7853eb9dd6e8956
 watermark-anything https://github.com/facebookresearch/watermark-anything.git 2c08af04d037d5667c02f6ddebbda9ff04581c3e
+PECCAVI https://github.com/SRDdev/PECCAVI.git a429df0bddadef0061758bea1d7620927414536e (branch CVPR2026; vendored with fixes, see external_repos/peccavi/FIXES.md)
