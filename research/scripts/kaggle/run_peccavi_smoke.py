@@ -2,12 +2,14 @@
 """Kaggle 2x T4 runner for configs/peccavi_smoke.yaml (called by peccavi_smoke.ipynb).
 
   python scripts/kaggle/run_peccavi_smoke.py --out /kaggle/working/peccavi_smoke [--gpus 2] [--config ...]
+      [--no-gate] [--set dataset.max_images=10 ...]
 
 - shard i of n runs on GPU i (CUDA_VISIBLE_DEVICES=i), output <out>/gpu<i>/<exp name>/
 - GPU 0 first runs scripts/peccavi_check.py on its first image; if that check fails, GPU 1 is stopped and
-  nothing else runs (exit 1)
-- stages embed -> edit -> evaluate run as separate processes so each gets a wall-clock time; every stage skips
-  outputs that already exist, so re-running (or resuming from a previous version's output) continues
+  nothing else runs (exit 1). With --no-gate the check is still run and reported but does not stop the run.
+- stages embed -> edit -> evaluate -> raw_l0 (detection on the pre-enhancement image, diagnostic) run as
+  separate processes so each gets a wall-clock time; every stage skips outputs that already exist, so
+  re-running (or resuming from a previous version's output) continues
 - writes <out>/run_times.json, <out>/logs/*.log, then <out>/report/{rows.csv,results.md,figure}
 """
 from __future__ import annotations
@@ -51,7 +53,7 @@ class Shard(threading.Thread):
         self.ok, self.proc = False, None
 
     def cmd(self, script: str, *extra: str) -> list[str]:
-        return [sys.executable, script, "--config", self.a.config, "--set",
+        return [sys.executable, script, "--config", self.a.config, "--set", *self.a.set,
                 f"output_dir={self.a.out / f'gpu{self.i}'}", f"dataset.shard=[{self.i},{self.n}]", *extra]
 
     def stage(self, name: str, cmd: list[str]) -> bool:
@@ -72,14 +74,17 @@ class Shard(threading.Thread):
     def run(self):
         if self.i == 0:
             ok = self.stage("check", self.cmd("scripts/peccavi_check.py"))
-            if not ok:
+            self.times["check_passed"] = ok
+            if not ok and self.a.gate:
                 self.abort.set()
             self.check_done.set()
-            if not ok:
+            if not ok and self.a.gate:
                 return
         for st in ("embed", "edit", "evaluate"):
             if not self.stage(st, self.cmd("run_experiment.py", "--stages", st)):
                 return
+        if not self.stage("raw_l0", self.cmd("scripts/peccavi_raw_l0.py")):
+            return
         self.ok = True
 
     def stop(self):
@@ -92,10 +97,12 @@ def main():
     ap.add_argument("--out", type=Path, default=Path("/kaggle/working/peccavi_smoke"))
     ap.add_argument("--config", default="configs/peccavi_smoke.yaml")
     ap.add_argument("--gpus", type=int, default=2)
+    ap.add_argument("--no-gate", dest="gate", action="store_false", help="report the 1-image check, don't stop on it")
+    ap.add_argument("--set", nargs="*", default=[], help="extra config overrides, e.g. dataset.max_images=10")
     a = ap.parse_args()
     (a.out / "logs").mkdir(parents=True, exist_ok=True)
     resume_from_inputs(a.out)
-    times: dict = {"started": time.strftime("%Y-%m-%d %H:%M:%S")}
+    times: dict = {"started": time.strftime("%Y-%m-%d %H:%M:%S"), "args": sys.argv[1:]}
     abort, check_done = threading.Event(), threading.Event()
     shards = [Shard(i, a.gpus, a, times, abort, check_done) for i in range(a.gpus)]
     t0 = time.time()

@@ -117,11 +117,13 @@ def main():
     wm, clean = df[df.watermark == "peccavi"], df[df.watermark == "none"]
     n = wm.id.nunique()
     L4 = det[det.level == det.level.max()].iloc[0]
+    hi0 = 100 * wilson(0, n)[1]
+    cats = ", ".join(f"{c} x{k}" for c, k in wm[wm.level == 0].category.value_counts(sort=False).items())
     s = [f"# PECCAVI under sequential InstructPix2Pix editing: smoke test (n={n})", "",
-         f"**This is a smoke test with n={n} images. The 95% Wilson intervals are wide (with n=5 a 0/5 result "
-         "is compatible with a true rate up to 43%). Treat the rates as a pipeline check, not as estimates.**", "",
-         "Setup: PIE-Bench++ (first 5 of stage 2's 90 images: one each from change_object, add_object, "
-         "delete_object, change_content, change_pose), InstructPix2Pix (50 steps, text cfg 7.5, image cfg 1.5), "
+         f"**This is a smoke test with n={n} images. The 95% Wilson intervals are wide (with n={n} a 0/{n} result "
+         f"is compatible with a true rate up to {hi0:.0f}%). Treat the rates as a pipeline check, not as estimates.**",
+         "", f"Setup: PIE-Bench++ (first {n} of stage 2's 90 images, round-robin over categories: {cats}), "
+         "InstructPix2Pix (50 steps, text cfg 7.5, image cfg 1.5), "
          "4 sequential edits as in stage 2 (round 1 = the image's own PIE-Bench++ edit; rounds 2-4 = global "
          "attribute, background, style), same seeds as stage 2. PECCAVI = official CVPR2026 code with the fixes in "
          "`external_repos/peccavi/FIXES.md`. Paraphrase captions = the PIE-Bench++ source prompt. Noisy burnishing "
@@ -153,6 +155,30 @@ def main():
           "Clean track:", "", md_table(clean[["id", "level", "peccavi_detected", "peccavi_p_value", "peccavi_wdp"] +
                                              [f"peccavi_{c}" for c in pcols if f"peccavi_{c}" in clean]], ".2e"), ""]
     l0 = wm[wm.level == 0]
+    raw = [pd.read_csv(e / "results" / "peccavi_raw_l0.csv", dtype={"id": str}) for e in a.exp
+           if (e / "results" / "peccavi_raw_l0.csv").exists()]
+    if raw:
+        raw = pd.concat(raw).drop_duplicates("id")
+        raw.to_csv(a.out / "peccavi_raw_l0.csv", index=False)
+        m = l0.assign(id=l0.id.astype(str))[["id", "category", "detected", "p_value", "wdp"]].merge(
+            raw, on=["id", "category"], how="inner")
+        k_raw, k_enh, nn = int(m.raw_detected.sum()), int(m.detected.sum()), len(m)
+        kept = m[[c for c in m if c.startswith("kept_patch")]].stack()
+        pr = m[[c for c in m if c.startswith("psnr_raw_patch")]].stack()
+        pe = m[[c for c in m if c.startswith("psnr_enh_patch")]].stack()
+        s += ["## Diagnostic: L0 detection before vs after adaptive enhancement", "",
+              "`Watermarker.forward()` writes the optimised image (raw) and then the adaptively enhanced one "
+              "(= theta x original + (1 - theta) x raw), which is the image the pipeline uses as L0. Scoring the raw "
+              "image with the same keys separates loss of signal in the enhancement step from loss in embedding / "
+              "DDIM inversion. Method unchanged; this is an extra measurement.", "",
+              f"- L0 detection, raw: **{pct(k_raw, nn)}**; enhanced (pipeline L0): **{pct(k_enh, nn)}**; n={nn}.",
+              f"- Fraction of the raw residual kept by enhancement (1 - theta), per patch: mean {kept.mean():.2f} "
+              f"(min {kept.min():.2f}, max {kept.max():.2f}).",
+              f"- Watermarked-patch PSNR vs original: raw {pr.mean():.1f} dB (min {pr.min():.1f}), enhanced "
+              f"{pe.mean():.1f} dB (min {pe.min():.1f}). Pixels outside the 4 patches are unchanged.", "",
+              md_table(m[["id", "category", "raw_p_value", "raw_wdp", "raw_detected", "p_value", "wdp", "detected"]]
+                       .rename(columns={"p_value": "enh_p_value", "wdp": "enh_wdp", "detected": "enh_detected"}),
+                       ".2e"), ""]
     s += ["## Watermark imperceptibility (watermarked L0 vs original)", "",
           f"PSNR {l0.wm_psnr.mean():.2f} dB (min {l0.wm_psnr.min():.2f}, max {l0.wm_psnr.max():.2f}); "
           f"SSIM {l0.wm_ssim.mean():.4f} (min {l0.wm_ssim.min():.4f}, max {l0.wm_ssim.max():.4f}); n={len(l0)}.", "",
