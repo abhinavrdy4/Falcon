@@ -199,7 +199,13 @@ class DWTDCT(Watermark):
         return np.array(self._dec("bits", self.nbits).decode(bgr, self.mode), dtype=np.uint8)
 
 
-REGISTRY = {"wam": WAM, "trustmark": TrustMarkWM, "dwtdct": DWTDCT}
+def _peccavi(**kwargs):  # imported lazily: wmedit.peccavi imports this module
+    from .peccavi import PECCAVI
+
+    return PECCAVI(**kwargs)
+
+
+REGISTRY = {"wam": WAM, "trustmark": TrustMarkWM, "dwtdct": DWTDCT, "peccavi": _peccavi}
 
 
 def build_watermark(name: str, **kwargs) -> Watermark:

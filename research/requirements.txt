@@ -24,3 +24,8 @@ tqdm
 pytest
 scikit-learn
 tabulate
+# PECCAVI (external_repos/peccavi)
+saliency
+shapely
+pytorch-msssim
+wandb

@@ -1,0 +1,23 @@
+# PECCAVI smoke test: 5 PIE-Bench++ images = the first 5 of stage 2's 90 (same selection, seed, prompts and
+# edit seeds, so rows pair with stage 2), InstructPix2Pix, 4 sequential edits (round 1 = the image's own
+# PIE-Bench++ edit, rounds 2-4 = global attribute, background, style).
+# One process per GPU: --set dataset.shard=[0,2] / [1,2] with separate output_dir (see scripts/kaggle/).
+name: peccavi_smoke
+seed: 42
+output_dir: experiments
+dataset:
+  name: pie_bench_pp
+  subsets: null        # categories 1-9, as stage 2
+  per_subset: 10
+  max_images: 5        # round-robin over categories: one image each from change_object .. change_pose
+  rounds: 4
+watermarks:
+  - {name: none}       # FPR control track: PECCAVI detector run on the clean image with that image's keys
+  - {name: peccavi}    # paraphrase x5 (SDXL, caption = PIE-Bench++ source prompt) -> XRAI -> NMP patches -> embed
+editors:
+  - {name: ip2p, steps: 50, text_cfg: 7.5, image_cfg: 1.5}
+methods:
+  - {name: baseline}
+evaluation:
+  target_fpr: 1.0e-3   # PECCAVI: Bonferroni p = k * min_i p_i over the k stored patches
+  image_metrics: true

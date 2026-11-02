@@ -55,6 +55,12 @@ class Experiment:
             RESEARCH_ROOT / "datasets" / "hf_cache", d.get("subsets"), d.get("per_subset"),
             d.get("max_images"), self.rounds, self.seed, d.get("skip_per_subset", 0),
             d.get("followup_order"))
+        if d.get("shard"):  # [i, n]: this process takes every n-th sample from i (one process per GPU)
+            i, n = d["shard"]
+            self.samples = self.samples[i::n]
+            keep = {s.id for s in self.samples}
+            self.images = {k: v for k, v in self.images.items() if k in keep}
+            self.masks = {k: v for k, v in self.masks.items() if k in keep}
         if d.get("source") == "generated":  # generated-image track: originals are clean SD-1.5 generations
             self._generate_originals()
         write_prompt_manifest(self.samples, self.root / "prompts.jsonl")
@@ -85,8 +91,16 @@ class Experiment:
             from .watermarks import build_watermark
 
             kw = {k: v for k, v in self.wm_cfgs.get(name, {"name": name}).items() if k != "name"}
-            self._wm_cache[name] = GEN_REGISTRY[name](**kw) if name in GEN_REGISTRY else build_watermark(name, **kw)
+            wm = GEN_REGISTRY[name](**kw) if name in GEN_REGISTRY else build_watermark(name, **kw)
+            if getattr(wm, "per_image_state", False):  # PECCAVI: patches + keys are stored per image
+                wm.cache_dir = self.root / "wm_state" / name
+            self._wm_cache[name] = wm
         return self._wm_cache[name]
+
+    @staticmethod
+    def _ctx(wm, s: Sample) -> dict:
+        """Extra arguments for watermarks whose embed/score need the sample (id, caption), e.g. PECCAVI."""
+        return {"sample": s} if getattr(wm, "per_image_state", False) else {}
 
     def payload(self, wm, sid: str) -> np.ndarray:
         if wm.nbits == 0:  # zero-bit watermark (Tree-Ring)
@@ -106,6 +120,8 @@ class Experiment:
     def embed(self):
         for wm_name in self.wm_cfgs:
             wm = self.watermark(wm_name)
+            if hasattr(wm, "prepare"):  # stage-major per-image preprocessing (PECCAVI: paraphrase, XRAI)
+                wm.prepare([(s, self.images[s.id]) for s in self.samples if not self.l0_path(wm_name, s.id).exists()])
             for s in self.samples:
                 p = self.l0_path(wm_name, s.id)
                 if p.exists():
@@ -117,7 +133,7 @@ class Experiment:
                 elif getattr(wm, "generative", False):
                     out = wm.generate(s.source_caption, self.payload(wm, s.id), self.gen_seed(s.id))
                 else:
-                    out = wm.embed(img, self.payload(wm, s.id))
+                    out = wm.embed(img, self.payload(wm, s.id), **self._ctx(wm, s))
                 out.save(p)
         log.info("embed stage done")
 
@@ -195,13 +211,16 @@ class Experiment:
                                 # watermark detection: own payload, or (control track) every detector
                                 for det in ([wm_name] if wm_name != "none" else detectors):
                                     wm = self.watermark(det)
-                                    sc = wm.score(img, self.payload(wm, s.id), fpr)
+                                    sc = wm.score(img, self.payload(wm, s.id), fpr, **self._ctx(wm, s))
                                     pre = "" if wm_name != "none" else f"{det}_"
                                     row.update({f"{pre}{k}": v for k, v in sc.items()})
                                     if det == "wam":
                                         row[f"{pre}wam_mask_frac"] = wm.mask_fraction(img)
                                 if r == 0:
                                     row.update({f"wm_{k}": v for k, v in image_quality(orig, img).items()})
+                                    if wm_name != "none" and hasattr(self.watermark(wm_name), "image_info"):
+                                        row.update({f"wm_{k}": v for k, v in  # per-image stage timings etc.
+                                                    self.watermark(wm_name).image_info(s.id).items()})
                                 elif metrics is not None:
                                     keep = (1 - self.masks[s.id]) if r == 1 else None
                                     row.update(metrics.pair(prev, img, step.source_caption, step.target_caption, keep))
