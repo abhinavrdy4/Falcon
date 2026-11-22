@@ -1,0 +1,18 @@
+# PECCAVI on the full stage-2 set: 90 PIE-Bench++ images (10 per category 1-9, same selection, prompts and edit
+# seeds as stage 2, so rows pair with the WAM / TrustMark / Tree-Ring results), InstructPix2Pix, 4 sequential edits.
+# Tracks: none (false-positive control), peccavi (official), peccavi_raw (ablation: no adaptive enhancement).
+# Same method, editor and detection as peccavi_smoke_raw.yaml; the only addition is save_internals (detection
+# writes the inverted patch latents it tested next to the keys; p-values are unchanged).
+# Name stays peccavi_smoke so the 10 images already run (abhinaviitm/peccavi-raw10 output) are reused, not redone.
+# Kaggle sessions are capped at 12 h, so run it in prefixes: --set dataset.max_images=34, then 58, 82, 90.
+base: peccavi_smoke_raw.yaml
+dataset:
+  name: pie_bench_pp
+  subsets: null
+  per_subset: 10
+  max_images: 90
+  rounds: 4
+watermarks:
+  - {name: none}
+  - {name: peccavi, save_internals: true}
+  - {name: peccavi_raw, save_internals: true}

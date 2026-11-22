@@ -2,13 +2,14 @@
 """Kaggle 2x T4 runner for configs/peccavi_smoke.yaml (called by peccavi_smoke.ipynb).
 
   python scripts/kaggle/run_peccavi_smoke.py --out /kaggle/working/peccavi_smoke [--gpus 2] [--config ...]
-      [--no-gate] [--set dataset.max_images=10 ...]
+      [--no-gate] [--extras] [--set dataset.max_images=10 ...]
 
 - shard i of n runs on GPU i (CUDA_VISIBLE_DEVICES=i), output <out>/gpu<i>/<exp name>/
 - GPU 0 first runs scripts/peccavi_check.py on its first image; if that check fails, GPU 1 is stopped and
   nothing else runs (exit 1). With --no-gate the check is still run and reported but does not stop the run.
 - stages embed -> edit -> evaluate -> raw_l0 (detection on the pre-enhancement image, diagnostic) run as
-  separate processes so each gets a wall-clock time; every stage skips outputs that already exist, so
+  separate processes so each gets a wall-clock time (--extras adds controls -> internals from
+  scripts/peccavi_extras.py, analysis only); every stage skips outputs that already exist, so
   re-running (or resuming from a previous version's output) continues
 - writes <out>/run_times.json, <out>/logs/*.log, then <out>/report/{rows.csv,results.md,figure}
 """
@@ -89,6 +90,9 @@ class Shard(threading.Thread):
                 return
         if not self.stage("raw_l0", self.cmd("scripts/peccavi_raw_l0.py")):
             return
+        for st in ("controls", "internals") if self.a.extras else ():
+            if not self.stage(st, self.cmd("scripts/peccavi_extras.py", "--stage", st)):
+                return
         self.ok = True
 
     def stop(self):
@@ -102,6 +106,8 @@ def main():
     ap.add_argument("--config", default="configs/peccavi_smoke.yaml")
     ap.add_argument("--gpus", type=int, default=2)
     ap.add_argument("--no-gate", dest="gate", action="store_false", help="report the 1-image check, don't stop on it")
+    ap.add_argument("--extras", action="store_true",
+                    help="after raw_l0, run scripts/peccavi_extras.py controls + internals (config needs save_internals)")
     ap.add_argument("--set", nargs="*", default=[], help="extra config overrides, e.g. dataset.max_images=10")
     a = ap.parse_args()
     (a.out / "logs").mkdir(parents=True, exist_ok=True)

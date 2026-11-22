@@ -82,3 +82,14 @@ folder changes: it reuses the official run's patches, keys, embedding and detect
 `ssim_threshold: 0.99`, enhancement keeps 30-60% of the watermark residual (theta 0.4-0.7) and L0 detection falls
 from 9/10 to 4/10 on the smoke images; the un-enhanced image (PSNR ~29.0 dB, SSIM ~0.96) is close to the quality the
 paper reports for PECCAVI (Table 1: 29.6-29.9 dB, 0.93). The official track stays the benchmark row.
+
+## Analysis additions (not part of the method)
+
+Nothing in this folder changes. `configs/peccavi_full90.yaml` turns on `save_internals` in the wrapper
+(`wmedit/peccavi.py`): during detection, each patch key's `tree_ring_p_value` is wrapped so the inverted patch
+latent it tests is kept, and `<cache>/<id>/internals/<image hash>.npz` stores that latent with the key, ring mask and
+p-value. The wrapper calls the original on the same tensor and returns its value, so p-values are unchanged
+(`tests/test_peccavi_extras.py` checks this and recomputes each p from the saved file).
+`scripts/peccavi_extras.py` adds two no-change controls of every L0 image (VAE round trip, InstructPix2Pix with
+"keep the image unchanged") and backfills internals; `scripts/peccavi_patch_analysis.py` builds the per-patch table
+offline. Both only read the pipeline's outputs and write next to them.

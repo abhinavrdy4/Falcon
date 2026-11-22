@@ -20,6 +20,7 @@ fp32 as in the official code (Adam through the UNet; p-values from DDIM inversio
 from __future__ import annotations
 
 import gc
+import hashlib
 import importlib.machinery
 import json
 import logging
@@ -70,13 +71,15 @@ class PECCAVI(Watermark):
     per_image_state = True  # pipeline passes the Sample to embed/score and sets cache_dir
     state_name = "peccavi"  # cache folder under <experiment>/wm_state/ (shared by PECCAVIRaw)
 
-    def __init__(self, device=None, num_paraphrases: int = 5, paraphrase_fp16: bool = True, **_):
+    def __init__(self, device=None, num_paraphrases: int = 5, paraphrase_fp16: bool = True,
+                 save_internals: bool = False, **_):
         import matplotlib
 
         matplotlib.use("Agg")
         self.device = torch.device(device or get_device())
         self.num_paraphrases = num_paraphrases
         self.paraphrase_fp16 = paraphrase_fp16 and self.device.type == "cuda"
+        self.save_internals = save_internals  # analysis only: see detect_patches()
         self.cache_dir: Path | None = None
         self._para = self._sal = self._wmk = None
         with peccavi_env(self.device.type):
@@ -255,8 +258,47 @@ class PECCAVI(Watermark):
         with peccavi_env(self.device.type):
             w = self._watermarker(p["final"])
             w.load_state(str(p["state"]))
+            seen = self._record_ring_inputs(w) if self.save_internals else None
             w.detect(str(tmp))
+            if seen is not None:
+                self._save_internals(img, sid, w, seen)
             return list(w.last_detection)
+
+    @staticmethod
+    def image_key(img: Image.Image) -> str:
+        """Content hash that names an image's internals file (the pipeline's row keys never reach score())."""
+        return hashlib.sha1(np.asarray(img.convert("RGB")).tobytes()).hexdigest()[:20]
+
+    def internals_path(self, img: Image.Image, sid: str) -> Path:
+        return self.paths(sid)["root"] / "internals" / f"{self.image_key(img)}.npz"
+
+    @staticmethod
+    def _record_ring_inputs(w) -> dict:
+        """Wrap each patch key's official tree_ring_p_value so the inverted patch latent it tests is kept. The
+        wrapper calls the original on the same tensor and returns its value, so detection is unchanged."""
+        seen = {}
+        for idx, gt in w.wm_pipes.items():
+            def record(latents, _orig=gt.tree_ring_p_value, _idx=idx):
+                seen[_idx] = latents.detach().float().cpu().numpy()
+                return _orig(latents)
+            gt.tree_ring_p_value = record
+        return seen
+
+    def _save_internals(self, img: Image.Image, sid: str, w, seen: dict) -> None:
+        """<cache>/<id>/internals/<image_key>.npz: per patch the DDIM-inverted latent the ring test saw, the key
+        (gt_patch, complex) and ring mask it compared against, and the p-value; enough to recompute the
+        chi-squared statistic, ring correlation or per-frequency energy offline."""
+        arrays = {}
+        for d in w.last_detection:
+            i = d["patch_idx"]
+            gt = w.wm_pipes[i]
+            arrays.update({f"latents{i}": seen[i], f"p{i}": np.float64(d["p_value"]),
+                           f"coords{i}": np.asarray(d["coords"]), f"channel{i}": np.int64(d["channel"]),
+                           f"key{i}": gt.gt_patch.detach().cpu().numpy(),
+                           f"mask{i}": gt.watermarking_mask.detach().cpu().numpy()})
+        out = self.internals_path(img, sid)
+        out.parent.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(out, **arrays)
 
     def score(self, img, bits, target_fpr, sample=None) -> dict:
         if sample is None:
