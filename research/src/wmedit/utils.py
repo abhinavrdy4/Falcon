@@ -27,6 +27,26 @@ def get_device() -> torch.device:
     return torch.device("cpu")
 
 
+def available_cpus() -> int:
+    """CPUs this process may use. In a container (Vast.ai, Docker) os.cpu_count() reports the host's cores, so
+    the cgroup CPU quota wins when one is set; then the affinity mask; then os.cpu_count()."""
+    try:
+        quota, period = Path("/sys/fs/cgroup/cpu.max").read_text().split()[:2]  # cgroup v2
+        if quota != "max":
+            return max(1, int(quota) // int(period))
+    except (OSError, ValueError):
+        pass
+    try:
+        quota = int(Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us").read_text())  # cgroup v1
+        if quota > 0:
+            return max(1, quota // int(Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us").read_text()))
+    except (OSError, ValueError):
+        pass
+    if hasattr(os, "sched_getaffinity"):
+        return len(os.sched_getaffinity(0))
+    return os.cpu_count() or 1
+
+
 def seed_everything(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)

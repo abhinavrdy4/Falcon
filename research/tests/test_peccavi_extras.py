@@ -191,3 +191,70 @@ def test_patch_analysis_on_stub_run(pec, W, tmp_path, monkeypatch):
     assert (out / "summary.md").read_text().startswith("# PECCAVI per-patch analysis")
     assert all((out / "patch_grids" / f"{s.id}.png").exists() for s in samples)
     assert (out / "fig_survival_vs_change.png").exists()
+
+
+# ---------------------------------------------------------------- parallel XRAI (xrai_workers > 1)
+def test_one_file_os_proxy():
+    import os
+
+    o = P._OneFile("a_gen_3.png")
+    assert o.listdir("/anything") == ["a_gen_3.png"]
+    assert o.path is os.path and o.makedirs is os.makedirs
+    from wmedit.utils import available_cpus
+
+    assert available_cpus() >= 1
+
+
+def test_parallel_xrai_matches_sequential(pec, tmp_path, monkeypatch):
+    """Orchestration: one job per paraphrase, embed() waits for its image, then the official scoring writes the
+    same final.json as the sequential loop. Workers are threads running a stand-in for _xrai_one (the real one is
+    checked against split.XRAI on real images separately; it needs InceptionV3)."""
+    import json
+    import shutil
+    from concurrent.futures import ThreadPoolExecutor
+
+    from test_peccavi import FakeSaliency
+
+    jobs = []
+
+    def fake_one(folder, fname):
+        jobs.append(fname)
+        d = Path(folder) / Path(fname).stem
+        d.mkdir(exist_ok=True)
+        (d / "XRAI_Analysis_data.json").write_text(json.dumps(
+            {"grid_centers": [], "merged_boxes": [{"x1": 192, "y1": 128, "x2": 320, "y2": 256}]}))
+        return 1.0
+
+    def scorer(self):
+        with P.peccavi_env("cpu"):
+            from utils.split import SaliencyDetector
+        return SaliencyDetector.__new__(SaliencyDetector)  # official process_and_score_boxes, no model
+
+    monkeypatch.setattr(P, "_xrai_one", fake_one)
+    monkeypatch.setattr(P.PECCAVI, "_load_saliency", scorer)
+    pec.xrai_workers, pec._xrai_pool = 2, ThreadPoolExecutor(2)
+    s, img = sample(), textured_image(3)
+    pec.prepare([(s, img)])
+    p = pec.paths(s.id)
+    assert s.id in pec._xrai_jobs and not p["final"].exists()  # submitted, not waited for
+    out = pec.embed(img, np.zeros(0, dtype=np.uint8), sample=s)
+    assert sorted(jobs) == sorted(f.name for f in p["para_dir"].glob("*_gen_*.png")) and len(jobs) == 5
+    assert p["final"].exists() and pec._xrai_pool is None and not pec._xrai_jobs
+    t = json.loads(p["timings"].read_text())
+    assert t["xrai_cpu_s"] == 5.0 and "xrai_wait_s" in t
+    assert pec.score(out, None, 1e-3, sample=s)["detected"]
+
+    seq = tmp_path / "seq" / p["para_dir"].name  # the same paraphrases through the sequential official loop
+    seq.mkdir(parents=True)
+    for f in p["para_dir"].glob("*_gen_*.png"):
+        shutil.copy(f, seq / f.name)
+    with P.peccavi_env("cpu"):
+        FakeSaliency().XRAI(str(seq))
+    assert json.loads((seq / "final.json").read_text()) == json.loads(p["final"].read_text())
+
+
+def test_xrai_workers_auto(monkeypatch):
+    monkeypatch.setattr(P, "available_cpus", lambda: 16)
+    wm = P.PECCAVI(device="cpu", xrai_workers="auto", xrai_threads=2)
+    assert wm.xrai_workers == 7  # (16 - 2) // 2
+    assert P.PECCAVI(device="cpu").xrai_workers == 0  # default: official sequential loop

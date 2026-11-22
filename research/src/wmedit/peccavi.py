@@ -35,7 +35,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from .utils import RESEARCH_ROOT, get_device, stable_seed, write_json
+from .utils import RESEARCH_ROOT, available_cpus, get_device, stable_seed, write_json
 from .watermarks import Watermark, _cwd
 
 PECCAVI_ROOT = RESEARCH_ROOT / "external_repos" / "peccavi"
@@ -65,6 +65,47 @@ def peccavi_env(device: str):
             plt.close("all")  # visualize_tensor() opens a figure per call and never closes it
 
 
+class _OneFile:
+    """Stands in for split.py's `os` module inside an XRAI worker: listdir() returns the one file, the rest is os."""
+
+    def __init__(self, fname: str):
+        self.fname = fname
+
+    def listdir(self, _path):
+        return [self.fname]
+
+    def __getattr__(self, name):
+        return getattr(os, name)
+
+
+_XRAI_SAL = None  # one SaliencyDetector (InceptionV3) per worker process
+
+
+def _xrai_worker_init(threads: int) -> None:
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""  # split.py keeps InceptionV3 on the CPU; keep workers off the GPU
+    os.environ["MPLBACKEND"] = "Agg"
+    torch.set_num_threads(threads)
+
+
+def _xrai_one(folder: str, fname: str) -> float:
+    """split.SaliencyDetector.XRAI() on one paraphrase in `folder`, in a worker process: the official loop body,
+    unchanged, with listdir narrowed to that file; the cross-paraphrase scoring runs once in the parent."""
+    global _XRAI_SAL
+    t = time.time()
+    with peccavi_env("cpu"):
+        import utils.split as split
+
+        if _XRAI_SAL is None:
+            _XRAI_SAL = split.SaliencyDetector()
+            _XRAI_SAL.process_and_score_boxes = lambda *a, **k: None
+        real, split.os = split.os, _OneFile(fname)
+        try:
+            _XRAI_SAL.XRAI(folder)
+        finally:
+            split.os = real
+    return time.time() - t
+
+
 class PECCAVI(Watermark):
     name = "peccavi"
     nbits = 0  # zero-bit
@@ -72,7 +113,7 @@ class PECCAVI(Watermark):
     state_name = "peccavi"  # cache folder under <experiment>/wm_state/ (shared by PECCAVIRaw)
 
     def __init__(self, device=None, num_paraphrases: int = 5, paraphrase_fp16: bool = True,
-                 save_internals: bool = False, **_):
+                 save_internals: bool = False, xrai_workers: int | str = 0, xrai_threads: int = 2, **_):
         import matplotlib
 
         matplotlib.use("Agg")
@@ -80,6 +121,11 @@ class PECCAVI(Watermark):
         self.num_paraphrases = num_paraphrases
         self.paraphrase_fp16 = paraphrase_fp16 and self.device.type == "cuda"
         self.save_internals = save_internals  # analysis only: see detect_patches()
+        # XRAI (CPU) per paraphrase in worker processes, same computation; 0/1 = official sequential loop
+        self.xrai_threads = max(1, int(xrai_threads))
+        self.xrai_workers = (max(1, (available_cpus() - 2) // self.xrai_threads) if xrai_workers == "auto"
+                             else int(xrai_workers))
+        self._xrai_pool, self._xrai_jobs = None, {}
         self.cache_dir: Path | None = None
         self._para = self._sal = self._wmk = None
         with peccavi_env(self.device.type):
@@ -201,12 +247,45 @@ class PECCAVI(Watermark):
             self._free("_para")
             for s, _ in todo:
                 p = self.paths(s.id)
-                if p["final"].exists():
+                if p["final"].exists() or s.id in self._xrai_jobs:
+                    continue
+                if self.xrai_workers > 1:  # CPU workers; embed() collects the result, so XRAI overlaps the GPU
+                    self._submit_xrai(s.id)
                     continue
                 self._sal = self._sal or self._load_saliency()
                 t = time.time()
                 self._sal.XRAI(str(p["para_dir"]))  # writes per-paraphrase boxes and final.json (top-4 patches)
                 self._record(s.id, xrai_cpu_s=time.time() - t)
+
+    # ------------------------------------------------------------------ parallel XRAI (opt-in: xrai_workers > 1)
+    def _submit_xrai(self, sid: str) -> None:
+        """One worker job per paraphrase, exactly the files split.XRAI() would loop over."""
+        folder = self.paths(sid)["para_dir"].resolve()
+        files = sorted(f for f in os.listdir(folder) if f.lower().endswith((".png", ".jpg", ".jpeg"))
+                       and "Heatmap" not in f and "Top" not in f)
+        if self._xrai_pool is None:
+            import multiprocessing as mp
+            from concurrent.futures import ProcessPoolExecutor
+
+            self._xrai_pool = ProcessPoolExecutor(self.xrai_workers, mp_context=mp.get_context("spawn"),
+                                                  initializer=_xrai_worker_init, initargs=(self.xrai_threads,))
+            log.info("peccavi: XRAI on %d CPU workers x %d threads", self.xrai_workers, self.xrai_threads)
+        self._xrai_jobs[sid] = [self._xrai_pool.submit(_xrai_one, str(folder), f) for f in files]
+
+    def _finish_xrai(self, sid: str) -> None:
+        """Wait for an image's XRAI jobs, then the official cross-paraphrase scoring (writes final.json)."""
+        jobs = self._xrai_jobs.pop(sid, None)
+        if jobs is None:
+            return
+        t = time.time()
+        cpu = sum(j.result() for j in jobs)
+        with peccavi_env(self.device.type):
+            self._sal = self._sal or self._load_saliency()
+            self._sal.process_and_score_boxes(base_path=str(self.paths(sid)["para_dir"].resolve()))
+        self._record(sid, xrai_cpu_s=cpu, xrai_wait_s=time.time() - t)  # cpu: summed over the paraphrase jobs
+        if not self._xrai_jobs:
+            self._xrai_pool.shutdown()
+            self._xrai_pool = None
 
     # ------------------------------------------------------------------ stage 3: embed
     def _watermarker(self, final_json: Path):
@@ -221,8 +300,10 @@ class PECCAVI(Watermark):
         if sample is None:
             raise ValueError("PECCAVI needs the sample (id, source caption): run it through the pipeline")
         p = self.paths(sample.id)
+        self._finish_xrai(sample.id)
         if not p["final"].exists():
             self.prepare([(sample, img)])
+            self._finish_xrai(sample.id)
         if not (p["wm_img"].exists() and p["state"].exists()):
             with peccavi_env(self.device.type):
                 w = self._watermarker(p["final"])

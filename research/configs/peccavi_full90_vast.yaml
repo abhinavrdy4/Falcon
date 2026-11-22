@@ -1,0 +1,10 @@
+# peccavi_full90.yaml on one rented GPU (Vast.ai RTX 3090, 12+ CPU cores): identical method, edits and detection.
+# Only difference: XRAI (CPU) runs one paraphrase per worker process, xrai_threads torch threads each, with as many
+# workers as the container's CPU quota allows ("auto" = (cpus - 2) // xrai_threads), and overlaps the GPU
+# embedding of earlier images. Same XRAI computation per paraphrase; the cross-paraphrase scoring is the official one.
+# Run with scripts/vast/run.sh.
+base: peccavi_full90.yaml
+watermarks:
+  - {name: none}
+  - {name: peccavi, save_internals: true, xrai_workers: auto, xrai_threads: 2}
+  - {name: peccavi_raw, save_internals: true, xrai_workers: auto, xrai_threads: 2}

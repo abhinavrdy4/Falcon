@@ -26,6 +26,9 @@ import time
 from pathlib import Path
 
 RESEARCH = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(RESEARCH / "src"))
+
+from wmedit.utils import available_cpus  # noqa: E402  (cgroup-aware: containers report the host's cores)
 
 
 def log(msg: str):
@@ -65,7 +68,7 @@ class Shard(threading.Thread):
         if self.abort.is_set():
             return False
         env = dict(os.environ, CUDA_VISIBLE_DEVICES=str(self.i), PYTHONUNBUFFERED="1",
-                   OMP_NUM_THREADS=str(max(1, (os.cpu_count() or 2) // self.n)))
+                   OMP_NUM_THREADS=str(max(1, available_cpus() // self.n)))
         logf = self.a.out / "logs" / f"gpu{self.i}_{name}.log"
         log(f"[gpu{self.i}] {name} -> {logf}")
         t = time.time()
