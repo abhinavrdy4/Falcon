@@ -261,8 +261,13 @@ class PECCAVI(Watermark):
     def _submit_xrai(self, sid: str) -> None:
         """One worker job per paraphrase, exactly the files split.XRAI() would loop over."""
         folder = self.paths(sid)["para_dir"].resolve()
-        files = sorted(f for f in os.listdir(folder) if f.lower().endswith((".png", ".jpg", ".jpeg"))
-                       and "Heatmap" not in f and "Top" not in f)
+        files = [f for f in os.listdir(folder) if f.lower().endswith((".png", ".jpg", ".jpeg"))
+                 and "Heatmap" not in f and "Top" not in f]  # the order split.XRAI() loops in
+        # process_and_score_boxes() reads the result folders in directory order, which is creation order on common
+        # filesystems, and its tie-breaking (hence patch order -> channel and key) depends on it. Create them here
+        # in the sequential loop's order so the workers, finishing in any order, leave the same listing.
+        for f in files:
+            (folder / os.path.splitext(f)[0]).mkdir(exist_ok=True)
         if self._xrai_pool is None:
             import multiprocessing as mp
             from concurrent.futures import ProcessPoolExecutor

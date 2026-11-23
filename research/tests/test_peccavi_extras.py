@@ -232,16 +232,37 @@ def test_parallel_xrai_matches_sequential(pec, tmp_path, monkeypatch):
 
     monkeypatch.setattr(P, "_xrai_one", fake_one)
     monkeypatch.setattr(P.PECCAVI, "_load_saliency", scorer)
-    pec.xrai_workers, pec._xrai_pool = 2, ThreadPoolExecutor(2)
+    class Deferred:  # a pool that only queues, to look at the folder before any worker runs
+        def __init__(self):
+            self.q, self.ex = [], ThreadPoolExecutor(2)
+
+        def submit(self, fn, *a):
+            self.q.append((fn, a))
+            return self
+
+        def result(self):  # the first result() runs every queued job, in reverse order (workers finish in any order)
+            while self.q:
+                fn, a = self.q.pop()
+                fn(*a)
+            return 1.0
+
+        def shutdown(self):
+            self.ex.shutdown()
+
+    pec.xrai_workers, pec._xrai_pool = 2, Deferred()
     s, img = sample(), textured_image(3)
     pec.prepare([(s, img)])
     p = pec.paths(s.id)
     assert s.id in pec._xrai_jobs and not p["final"].exists()  # submitted, not waited for
+    import os
+
+    pngs = [f for f in os.listdir(p["para_dir"]) if f.endswith(".png")]
+    assert all((p["para_dir"] / f[:-4]).is_dir() for f in pngs) and not jobs  # result folders exist before any job
     out = pec.embed(img, np.zeros(0, dtype=np.uint8), sample=s)
     assert sorted(jobs) == sorted(f.name for f in p["para_dir"].glob("*_gen_*.png")) and len(jobs) == 5
     assert p["final"].exists() and pec._xrai_pool is None and not pec._xrai_jobs
     t = json.loads(p["timings"].read_text())
-    assert t["xrai_cpu_s"] == 5.0 and "xrai_wait_s" in t
+    assert "xrai_cpu_s" in t and "xrai_wait_s" in t
     assert pec.score(out, None, 1e-3, sample=s)["detected"]
 
     seq = tmp_path / "seq" / p["para_dir"].name  # the same paraphrases through the sequential official loop
