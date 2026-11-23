@@ -55,6 +55,11 @@ class Experiment:
             RESEARCH_ROOT / "datasets" / "hf_cache", d.get("subsets"), d.get("per_subset"),
             d.get("max_images"), self.rounds, self.seed, d.get("skip_per_subset", 0),
             d.get("followup_order"))
+        if d.get("start"):  # skip the first `start` images of the selection (e.g. already run on another machine)
+            self.samples = self.samples[int(d["start"]):]
+            keep = {s.id for s in self.samples}
+            self.images = {k: v for k, v in self.images.items() if k in keep}
+            self.masks = {k: v for k, v in self.masks.items() if k in keep}
         if d.get("shard"):  # [i, n]: this process takes every n-th sample from i (one process per GPU)
             i, n = d["shard"]
             self.samples = self.samples[i::n]

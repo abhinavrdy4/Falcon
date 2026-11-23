@@ -279,3 +279,25 @@ def test_xrai_workers_auto(monkeypatch):
     wm = P.PECCAVI(device="cpu", xrai_workers="auto", xrai_threads=2)
     assert wm.xrai_workers == 7  # (16 - 2) // 2
     assert P.PECCAVI(device="cpu").xrai_workers == 0  # default: official sequential loop
+
+
+def test_dataset_start_skips_images_done_elsewhere(tmp_path, monkeypatch):
+    """dataset.start (default 0) drops the first N images of the round-robin selection before sharding, so a
+    second machine can run images N+1.. without redoing the first N."""
+    from wmedit import pipeline as PL
+
+    ids = [f"00000000000{k}" for k in range(1, 6)]
+    monkeypatch.setattr(PL, "load_pie_bench", lambda *a, **k: (
+        [sample(i) for i in ids], {i: textured_image(1) for i in ids}, {i: np.zeros((8, 8), np.uint8) for i in ids}))
+
+    def selected(*overrides):
+        exp = PL.Experiment(PL.load_config(RESEARCH / "configs" / "peccavi_full90.yaml",
+                                           [f"output_dir={tmp_path}", *overrides]))
+        exp.prepare()
+        assert set(exp.images) == set(exp.masks) == {s.id for s in exp.samples}
+        return [s.id for s in exp.samples]
+
+    assert selected() == ids  # default: unchanged
+    assert selected("dataset.start=2") == ids[2:]
+    assert selected("dataset.start=2", "dataset.shard=[0,2]") == [ids[2], ids[4]]
+    assert selected("dataset.start=2", "dataset.shard=[1,2]") == [ids[3]]
