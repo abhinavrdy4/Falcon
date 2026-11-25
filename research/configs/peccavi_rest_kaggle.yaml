@@ -1,0 +1,19 @@
+# The PECCAVI 90-image run, images 31-90, on Kaggle 2x T4 (images 1-30 ran on a Vast.ai RTX 3090 with
+# peccavi_full90_vast.yaml). Same method, edits, detection and analysis extras as peccavi_full90.yaml; run with
+#   run_peccavi_smoke.py --no-gate --extras --config configs/peccavi_rest_kaggle.yaml --set dataset.max_images=<N>
+# for N = 56 (session 1), then 90 (resuming from session 1's output).
+# XRAI: one worker process per GPU shard with 2 torch threads (Kaggle: 4 CPU threads for 2 shards; the official
+# loop also gets 2 per shard), so the CPU XRAI of the next images overlaps the GPU embedding of the current one.
+# Same XRAI computation and folder order as the official loop (checked against it on the Vast run).
+base: peccavi_full90.yaml
+dataset:
+  name: pie_bench_pp
+  subsets: null
+  per_subset: 10
+  max_images: 90
+  start: 30
+  rounds: 4
+watermarks:
+  - {name: none}
+  - {name: peccavi, save_internals: true, xrai_workers: 1, xrai_threads: 2}
+  - {name: peccavi_raw, save_internals: true, xrai_workers: 1, xrai_threads: 2}

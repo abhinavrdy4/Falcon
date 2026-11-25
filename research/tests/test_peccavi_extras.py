@@ -279,6 +279,7 @@ def test_xrai_workers_auto(monkeypatch):
     wm = P.PECCAVI(device="cpu", xrai_workers="auto", xrai_threads=2)
     assert wm.xrai_workers == 7  # (16 - 2) // 2
     assert P.PECCAVI(device="cpu").xrai_workers == 0  # default: official sequential loop
+    assert P.PECCAVI(device="cpu", xrai_workers=1).xrai_workers == 1  # one worker: overlap only
 
 
 def test_dataset_start_skips_images_done_elsewhere(tmp_path, monkeypatch):

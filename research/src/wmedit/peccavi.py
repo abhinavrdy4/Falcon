@@ -121,7 +121,8 @@ class PECCAVI(Watermark):
         self.num_paraphrases = num_paraphrases
         self.paraphrase_fp16 = paraphrase_fp16 and self.device.type == "cuda"
         self.save_internals = save_internals  # analysis only: see detect_patches()
-        # XRAI (CPU) per paraphrase in worker processes, same computation; 0/1 = official sequential loop
+        # XRAI (CPU) per paraphrase in worker processes, same computation, overlapping the GPU embedding of earlier
+        # images; 0 = the official in-process sequential loop (default)
         self.xrai_threads = max(1, int(xrai_threads))
         self.xrai_workers = (max(1, (available_cpus() - 2) // self.xrai_threads) if xrai_workers == "auto"
                              else int(xrai_workers))
@@ -249,7 +250,7 @@ class PECCAVI(Watermark):
                 p = self.paths(s.id)
                 if p["final"].exists() or s.id in self._xrai_jobs:
                     continue
-                if self.xrai_workers > 1:  # CPU workers; embed() collects the result, so XRAI overlaps the GPU
+                if self.xrai_workers >= 1:  # CPU workers; embed() collects the result, so XRAI overlaps the GPU
                     self._submit_xrai(s.id)
                     continue
                 self._sal = self._sal or self._load_saliency()
@@ -257,7 +258,7 @@ class PECCAVI(Watermark):
                 self._sal.XRAI(str(p["para_dir"]))  # writes per-paraphrase boxes and final.json (top-4 patches)
                 self._record(s.id, xrai_cpu_s=time.time() - t)
 
-    # ------------------------------------------------------------------ parallel XRAI (opt-in: xrai_workers > 1)
+    # ------------------------------------------------------------------ parallel XRAI (opt-in: xrai_workers >= 1)
     def _submit_xrai(self, sid: str) -> None:
         """One worker job per paraphrase, exactly the files split.XRAI() would loop over."""
         folder = self.paths(sid)["para_dir"].resolve()
